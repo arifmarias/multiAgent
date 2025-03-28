@@ -1,0 +1,4 @@
+class_path: cookbook.config.shared.agent_storage_location.AgentStorageConfig
+evaluation_set_uc_table: main.default.story_builder_agent_eval_set
+mlflow_experiment_name: /Users/mohammedarif@prudential.com.my/story_builder_agent_mlflow_experiment
+uc_model_name: main.default.story_builder_agent

@@ -1,0 +1,8 @@
+class_path: cookbook.config.agents.genie_agent.GenieAgentConfig
+encountered_error_user_message: I encountered an error trying to answer your question,
+  please try again.
+genie_space_id: 01f000761c7d19e989a56ad73374b906
+input_example:
+  messages:
+  - content: What types of data can I query?
+    role: user

@@ -1,0 +1,281 @@
+agent_loading_mode: local
+agents:
+- agent_class_path: cookbook.agents.genie_agent.GenieAgent
+  agent_config:
+    class_path: cookbook.config.agents.genie_agent.GenieAgentConfig
+    encountered_error_user_message: I encountered an error trying to answer your question,
+      please try again.
+    genie_space_id: 01f000761c7d19e989a56ad73374b906
+    input_example:
+      messages:
+      - content: What types of data can I query?
+        role: user
+  class_path: cookbook.config.agents.multi_agent_supervisor.SupervisedAgentConfig
+  description: Queries and analyzes data from databases with natural language. Can
+    transform complex data requests into SQL queries and return structured results.
+  endpoint_name: null
+  name: Genie
+- agent_class_path: cookbook.agents.visualization_agent.VisualizationAgent
+  agent_config:
+    class_path: cookbook.config.agents.visualization_agent.VisualizationAgentConfig
+    input_example:
+      messages:
+      - content: 'Visualize this data: | Month | Revenue | Profit |
+
+          |---|---|---|
+
+          | Jan | 100 | 20 |
+
+          | Feb | 110 | 22 |
+
+          | Mar | 120 | 24 |'
+        role: user
+    llm_endpoint_name: databricks-meta-llama-3-3-70b-instruct
+    system_prompt: 'You are an expert data visualization specialist. Your job is to
+      create visualizations from data, no matter the format.
+
+
+      IMPORTANT INSTRUCTIONS:
+
+      1. The data will be provided to you in JSON format. You MUST use this data to
+      create a visualization.
+
+      2. If the data appears in a format like [{"usage_date": "2025-03-26", "avg_currency_conversion_rate":
+      9870.5}, ...] create a line chart showing the trend over time.
+
+      3. If you see a "No table data found" message, check if JSON data is still available
+      in another part of the input.
+
+      4. NEVER give up on creating a visualization! Even with minimal or difficult
+      data, create a simple chart.
+
+      5. When using create_line_chart or create_bar_chart, make sure to properly format
+      any JSON data as a string.
+
+
+      Your visualizations should be clear, informative, and properly labeled. Quality
+      visualization is better than no visualization.
+
+      '
+    tools:
+    - class_path: cookbook.tools.uc_tool.UCTool
+      error_prompt: 'The tool call generated an Exception, detailed in `error`. Think
+        step-by-step following these instructions to determine your next step.
+
+        [1] Is the error due to a problem with the input parameters?
+
+        [2] Could it succeed if retried with exactly the same inputs?
+
+        [3] Could it succeed if retried with modified parameters using the input we
+        already have from the user?
+
+        [4] Could it succeed if retried with modified parameters informed by collecting
+        additional input from the user?  What specific input would we need from the
+        user?
+
+        Based on your thinking, if the error is due to a problem with the input parameters,
+        either call this tool again in a way that avoids this exception or collect
+        additional information from the user to modify the inputs to avoid this exception.'
+      uc_function_name: main.default.create_bar_chart
+    - class_path: cookbook.tools.uc_tool.UCTool
+      error_prompt: 'The tool call generated an Exception, detailed in `error`. Think
+        step-by-step following these instructions to determine your next step.
+
+        [1] Is the error due to a problem with the input parameters?
+
+        [2] Could it succeed if retried with exactly the same inputs?
+
+        [3] Could it succeed if retried with modified parameters using the input we
+        already have from the user?
+
+        [4] Could it succeed if retried with modified parameters informed by collecting
+        additional input from the user?  What specific input would we need from the
+        user?
+
+        Based on your thinking, if the error is due to a problem with the input parameters,
+        either call this tool again in a way that avoids this exception or collect
+        additional information from the user to modify the inputs to avoid this exception.'
+      uc_function_name: main.default.create_line_chart
+    - class_path: cookbook.tools.uc_tool.UCTool
+      error_prompt: 'The tool call generated an Exception, detailed in `error`. Think
+        step-by-step following these instructions to determine your next step.
+
+        [1] Is the error due to a problem with the input parameters?
+
+        [2] Could it succeed if retried with exactly the same inputs?
+
+        [3] Could it succeed if retried with modified parameters using the input we
+        already have from the user?
+
+        [4] Could it succeed if retried with modified parameters informed by collecting
+        additional input from the user?  What specific input would we need from the
+        user?
+
+        Based on your thinking, if the error is due to a problem with the input parameters,
+        either call this tool again in a way that avoids this exception or collect
+        additional information from the user to modify the inputs to avoid this exception.'
+      uc_function_name: main.default.create_pie_chart
+    - class_path: cookbook.tools.uc_tool.UCTool
+      error_prompt: 'The tool call generated an Exception, detailed in `error`. Think
+        step-by-step following these instructions to determine your next step.
+
+        [1] Is the error due to a problem with the input parameters?
+
+        [2] Could it succeed if retried with exactly the same inputs?
+
+        [3] Could it succeed if retried with modified parameters using the input we
+        already have from the user?
+
+        [4] Could it succeed if retried with modified parameters informed by collecting
+        additional input from the user?  What specific input would we need from the
+        user?
+
+        Based on your thinking, if the error is due to a problem with the input parameters,
+        either call this tool again in a way that avoids this exception or collect
+        additional information from the user to modify the inputs to avoid this exception.'
+      uc_function_name: main.default.format_table_data
+  class_path: cookbook.config.agents.multi_agent_supervisor.SupervisedAgentConfig
+  description: Creates data visualizations based on Genie query results. Determines
+    the most appropriate chart types based on data structure and analysis goals.
+  endpoint_name: null
+  name: Visualization
+- agent_class_path: cookbook.agents.story_builder_agent.StoryBuilderAgent
+  agent_config:
+    class_path: cookbook.config.agents.story_builder_agent.StoryBuilderAgentConfig
+    input_example:
+      messages:
+      - content: 'Create a data story from this analysis: Revenue increased by 15%
+          in Q2, with the East region showing the highest growth.'
+        role: user
+    llm_endpoint_name: databricks-meta-llama-3-3-70b-instruct
+    system_prompt: 'You are an expert storyteller specializing in data narratives.
+      Your role is to craft compelling stories based on data analysis and visualizations,
+      following the S.T.O.R.Y framework.
+
+
+      ## S.T.O.R.Y Framework
+
+      - Situation: Set the context and background for the data analysis
+
+      - Take off: Identify the key trends, patterns, or insights that stand out
+
+      - Opportunity: Highlight the implications or potential actions suggested by
+      the data
+
+      - Resolution: Propose potential solutions or decisions based on the insights
+
+      - Yield: Summarize the expected outcomes or benefits of taking action
+
+
+      ## Instructions
+
+      1. Study the data analysis from the Genie agent and the visualizations created.
+
+      2. Identify the most significant insights and patterns in the data.
+
+      3. Craft a coherent narrative that flows logically through the S.T.O.R.Y framework.
+
+      4. Use clear, engaging language that makes the data accessible and meaningful.
+
+      5. Focus on business implications and actionable insights.
+
+      6. Reference specific visualizations to support key points in your story.
+
+
+      Your goal is to transform data and visualizations into a compelling narrative
+      that helps stakeholders understand the significance of the information and make
+      informed decisions.
+
+      '
+  class_path: cookbook.config.agents.multi_agent_supervisor.SupervisedAgentConfig
+  description: 'Crafts compelling narratives from data and visualizations using the
+    S.T.O.R.Y framework: Situation, Take off, Opportunity, Resolution, Yield. Focuses
+    on business insights and key findings.'
+  endpoint_name: null
+  name: StoryBuilder
+class_path: cookbook.config.agents.multi_agent_supervisor.MultiAgentSupervisorConfig
+input_example:
+  messages:
+  - content: Analyze the monthly sales data and create a story about it.
+    role: user
+llm_endpoint_name: databricks-meta-llama-3-3-70b-instruct
+llm_parameters:
+  max_tokens: 1500
+  temperature: 0.1
+max_supervisor_loops: 4
+playground_debug_mode: true
+supervisor_error_response: I'm sorry, but I encountered an error while processing
+  your request. Please try again with a clearer question about data you'd like me
+  to analyze and create a story about.
+supervisor_system_prompt: '## Role
+
+  You are a supervisor responsible for managing a conversation between a user and
+  the following workers. You select the next worker to respond or end the conversation
+  to return the last worker''s response to the user. Use the `{ROUTING_FUNCTION_NAME}`
+  function to share your step-by-step reasoning and decision.
+
+
+  ## Workers
+
+  {workers_names_and_descriptions}
+
+
+  ## Objective
+
+  Your goal is to facilitate a three-step data analysis and storytelling process:
+
+  1. First, use the Genie agent to query and analyze the data
+
+  2. Next, use the Visualization agent to create an appropriate visualization of the
+  data
+
+  3. Finally, use the Story Builder agent to create a narrative following the S.T.O.R.Y
+  framework
+
+
+  ## Instructions
+
+  1. **Review the Conversation History**: Think step by step to understand the user''s
+  request and the current state of the conversation. Output to the `{CONVERSATION_HISTORY_THINKING_PARAM}`
+  variable.
+
+  2. **Assess Worker Descriptions**: Think step by step to consider each worker''s
+  capabilities in the context of the current conversation stage. Output to the `{WORKER_CAPABILITIES_THINKING_PARAM}`
+  variable.
+
+  3. **Select the next worker OR finish the conversation**: Based on the conversation
+  history and the worker''s descriptions, decide which worker should respond next
+  OR if the conversation should finish. Output either the  or "{FINISH_ROUTE_NAME}"
+  to the `{NEXT_WORKER_OR_FINISH_PARAM}` variable.
+
+
+  ## Flow Logic
+
+  - You MUST ALWAYS follow this EXACT sequence: Genie -> Visualization -> Story Builder
+  -> FINISH
+
+  - You may ONLY select FINISH after ALL THREE AGENTS have completed their tasks
+
+  - You MUST select the next agent in the sequence regardless of the content of the
+  previous agent''s response
+
+  - If this is the first turn, ALWAYS select Genie
+
+  - If Genie has just responded, ALWAYS select Visualization next
+
+  - If Visualization has just responded, ALWAYS select StoryBuilder next
+
+  - ONLY select FINISH after StoryBuilder has responded
+
+  - Never select the same agent twice in a row
+
+  - IMPORTANT: You must check which agent responded last by looking at the ''name''
+  field in the most recent assistant message
+
+  '
+supervisor_user_prompt: Given the conversation history, the worker's descriptions
+  and your thinking, which worker should act next OR should we FINISH? Respond with
+  one of {worker_names_with_finish} to the `{NEXT_WORKER_OR_FINISH_PARAM}` variable
+  in the `{ROUTING_FUNCTION_NAME}` function. If Genie agent already executed don't
+  select genie agent again, Genie agent will be executed once, then visualization
+  agent will be executed and after that story agent

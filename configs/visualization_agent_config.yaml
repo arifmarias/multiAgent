@@ -1,0 +1,113 @@
+class_path: cookbook.config.agents.visualization_agent.VisualizationAgentConfig
+input_example:
+  messages:
+  - content: 'Visualize this data: | Month | Revenue | Profit |
+
+      |---|---|---|
+
+      | Jan | 100 | 20 |
+
+      | Feb | 110 | 22 |
+
+      | Mar | 120 | 24 |'
+    role: user
+llm_endpoint_name: databricks-meta-llama-3-3-70b-instruct
+system_prompt: 'You are an expert data visualization specialist. Your job is to create
+  visualizations from data, no matter the format.
+
+
+  IMPORTANT INSTRUCTIONS:
+
+  1. The data will be provided to you in JSON format. You MUST use this data to create
+  a visualization.
+
+  2. If the data appears in a format like [{"usage_date": "2025-03-26", "avg_currency_conversion_rate":
+  9870.5}, ...] create a line chart showing the trend over time.
+
+  3. If you see a "No table data found" message, check if JSON data is still available
+  in another part of the input.
+
+  4. NEVER give up on creating a visualization! Even with minimal or difficult data,
+  create a simple chart.
+
+  5. When using create_line_chart or create_bar_chart, make sure to properly format
+  any JSON data as a string.
+
+
+  Your visualizations should be clear, informative, and properly labeled. Quality
+  visualization is better than no visualization.
+
+  '
+tools:
+- class_path: cookbook.tools.uc_tool.UCTool
+  error_prompt: 'The tool call generated an Exception, detailed in `error`. Think
+    step-by-step following these instructions to determine your next step.
+
+    [1] Is the error due to a problem with the input parameters?
+
+    [2] Could it succeed if retried with exactly the same inputs?
+
+    [3] Could it succeed if retried with modified parameters using the input we already
+    have from the user?
+
+    [4] Could it succeed if retried with modified parameters informed by collecting
+    additional input from the user?  What specific input would we need from the user?
+
+    Based on your thinking, if the error is due to a problem with the input parameters,
+    either call this tool again in a way that avoids this exception or collect additional
+    information from the user to modify the inputs to avoid this exception.'
+  uc_function_name: main.default.create_bar_chart
+- class_path: cookbook.tools.uc_tool.UCTool
+  error_prompt: 'The tool call generated an Exception, detailed in `error`. Think
+    step-by-step following these instructions to determine your next step.
+
+    [1] Is the error due to a problem with the input parameters?
+
+    [2] Could it succeed if retried with exactly the same inputs?
+
+    [3] Could it succeed if retried with modified parameters using the input we already
+    have from the user?
+
+    [4] Could it succeed if retried with modified parameters informed by collecting
+    additional input from the user?  What specific input would we need from the user?
+
+    Based on your thinking, if the error is due to a problem with the input parameters,
+    either call this tool again in a way that avoids this exception or collect additional
+    information from the user to modify the inputs to avoid this exception.'
+  uc_function_name: main.default.create_line_chart
+- class_path: cookbook.tools.uc_tool.UCTool
+  error_prompt: 'The tool call generated an Exception, detailed in `error`. Think
+    step-by-step following these instructions to determine your next step.
+
+    [1] Is the error due to a problem with the input parameters?
+
+    [2] Could it succeed if retried with exactly the same inputs?
+
+    [3] Could it succeed if retried with modified parameters using the input we already
+    have from the user?
+
+    [4] Could it succeed if retried with modified parameters informed by collecting
+    additional input from the user?  What specific input would we need from the user?
+
+    Based on your thinking, if the error is due to a problem with the input parameters,
+    either call this tool again in a way that avoids this exception or collect additional
+    information from the user to modify the inputs to avoid this exception.'
+  uc_function_name: main.default.create_pie_chart
+- class_path: cookbook.tools.uc_tool.UCTool
+  error_prompt: 'The tool call generated an Exception, detailed in `error`. Think
+    step-by-step following these instructions to determine your next step.
+
+    [1] Is the error due to a problem with the input parameters?
+
+    [2] Could it succeed if retried with exactly the same inputs?
+
+    [3] Could it succeed if retried with modified parameters using the input we already
+    have from the user?
+
+    [4] Could it succeed if retried with modified parameters informed by collecting
+    additional input from the user?  What specific input would we need from the user?
+
+    Based on your thinking, if the error is due to a problem with the input parameters,
+    either call this tool again in a way that avoids this exception or collect additional
+    information from the user to modify the inputs to avoid this exception.'
+  uc_function_name: main.default.format_table_data
