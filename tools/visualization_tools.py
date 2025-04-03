@@ -6,6 +6,7 @@ import io
 import base64
 from typing import Dict, List, Union, Optional, Any
 import re
+import sys
 
 def create_bar_chart(data: str, title: str, x_label: str, y_label: str, orientation: str, color: str, figsize: str) -> str:
     """
@@ -326,14 +327,21 @@ def python_viz_executor(code: str) -> str:
                    The code should create a visualization but not call plt.show().
         
     Returns:
-        str: Base64-encoded PNG image of the visualization
+        str: JSON string containing the visualization data or error information
     """
     try:
         # Create a namespace for execution
         namespace = {}
         
+        # Capture stdout to get print statements
+        console_output = io.StringIO()
+        sys.stdout = console_output
+        
         # Execute the code
         exec(code, namespace)
+        
+        # Reset stdout
+        sys.stdout = sys.__stdout__
         
         # Capture the current figure
         if 'plt' in namespace:
@@ -344,12 +352,28 @@ def python_viz_executor(code: str) -> str:
             image_base64 = base64.b64encode(buffer.read()).decode('utf-8')
             namespace['plt'].close()
             
-            return f"data:image/png;base64,{image_base64}"
+            # Return valid JSON with the image data
+            return json.dumps({
+                "image": image_base64,
+                "format": "image/png",
+                "console_output": console_output.getvalue()
+            })
         else:
-            return "Error: No matplotlib plot was created in the code"
-    
+            # Return valid JSON with error information
+            return json.dumps({
+                "error": "No matplotlib plot was created in the code",
+                "console_output": console_output.getvalue()
+            })
+            
     except Exception as e:
-        return f"Error executing visualization code: {str(e)}"
+        # Reset stdout if exception occurs
+        sys.stdout = sys.__stdout__
+        
+        # Return valid JSON with error information
+        return json.dumps({
+            "error": str(e),
+            "console_output": console_output.getvalue() if 'console_output' in locals() else ""
+        })
 
 def create_fallback_data():
     """
@@ -622,43 +646,84 @@ def connect_genie_to_visualization(genie_output):
     Returns:
         dict: Input suitable for the visualization agent
     """
-    from tools.visualization_tools import extract_data_from_genie_format, process_data_for_visualization
-    
-    # Get content from Genie's response
+    # Extract content from messages
     content = ""
     if isinstance(genie_output, dict):
         if 'content' in genie_output:
             content = genie_output['content']
         elif 'messages' in genie_output:
-            # Look through messages to find tool responses
+            # Find the last assistant message with content
             for msg in reversed(genie_output['messages']):
-                if 'content' in msg and msg['content']:
+                if msg.get('role') == 'assistant' and 'content' in msg and msg['content']:
                     content = msg['content']
                     break
     
-    # Extract structured data
-    extracted_data = extract_data_from_genie_format(content)
+    # Look for data in table format or JSON data
+    data_json = None
     
-    # Process data for visualization
-    processed_data = process_data_for_visualization(extracted_data)
+    # Try to find JSON-like patterns
+    import re
+    import json
     
-    # Prepare visualization instruction
+    # First look for markdown tables
+    table_pattern = r'\|(.+)\|\n\|(?:-+\|)+\n(?:\|.+\|\n)+'
+    table_match = re.search(table_pattern, content, re.DOTALL)
+    
+    if table_match:
+        table_text = table_match.group(0)
+        try:
+            # Convert markdown table to JSON
+            lines = table_text.strip().split('\n')
+            headers = [h.strip() for h in lines[0].split('|')[1:-1]]
+            data_rows = []
+            
+            for line in lines[2:]:  # Skip header and separator
+                if line.strip():
+                    values = [v.strip() for v in line.split('|')[1:-1]]
+                    if len(values) == len(headers):
+                        row = {headers[i]: values[i] for i in range(len(headers))}
+                        data_rows.append(row)
+            
+            if data_rows:
+                data_json = json.dumps(data_rows)
+        except Exception as e:
+            print(f"Error parsing markdown table: {e}")
+    
+    # If no table found, look for JSON data
+    if not data_json:
+        try:
+            json_pattern = r'\[(\s*\{.*?\}\s*(?:,\s*\{.*?\}\s*)*)\]'
+            json_match = re.search(json_pattern, content, re.DOTALL)
+            if json_match:
+                json_text = f"[{json_match.group(1)}]"
+                # Validate JSON
+                json.loads(json_text)
+                data_json = json_text
+        except Exception:
+            pass
+    
+    # Fallback if no data found
+    if not data_json:
+        data_json = json.dumps([
+            {"category": "Sample", "value": 100},
+            {"category": "Data", "value": 50}
+        ])
+    
+    # Create visualization instruction
     instruction = f"""
-    Please create a visualization based on this data: {processed_data}
+    Please create a visualization based on this JSON data: {data_json}
     
-    If the data contains dates or time information, create a line chart showing the trend over time.
+    If the data appears to contain dates or time periods, create a line chart.
     If the data is categorical, create a bar chart.
     
-    Even if you encounter difficulties with the data format, please make your best effort to create a visualization.
-    DO NOT return an error message - instead, use whatever data is available to create a simple chart.
+    Make your best effort to create a visualization with this data.
     """
     
-    # Prepare input for visualization agent
+    # Return properly formatted message array
     return {
-        "messages": genie_output.get("messages", []) + [{
-            "role": "user", 
-            "content": instruction.strip()
-        }]
+        "messages": genie_output.get("messages", []) + [
+            {"role": "user", "content": instruction.strip()}
+        ]
     }
     
 def extract_genie_content(genie_output: dict) -> str:
@@ -769,7 +834,7 @@ def parse_genie_response(genie_output):
             {"category": "Parsing", "value": 50}
         ])
     
-def generate_visualization_code(chart_type: str, data_description: str, specific_requirements: str) -> str:
+def generate_visualization_code(data_description: str, chart_type: str, specific_requirements: str) -> str:
     """
     Generates Python code to create a visualization based on given parameters.
     

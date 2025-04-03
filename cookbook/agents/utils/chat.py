@@ -28,16 +28,26 @@ def extract_user_query_string(chat_messages_array: List[Dict[str, str]]) -> str:
     Returns:
         User query string.
     """
+    # Handle empty or invalid input
+    if not chat_messages_array:
+        return ""
+        
+    if isinstance(chat_messages_array, str):
+        return chat_messages_array
 
     if isinstance(chat_messages_array, pd.Series):
         chat_messages_array = chat_messages_array.tolist()
+    
+    # Handle the case where the array might be empty
+    if not chat_messages_array:
+        return ""
 
     if isinstance(chat_messages_array[-1], dict):
-        return chat_messages_array[-1]["content"]
+        return chat_messages_array[-1].get("content", "")
     elif isinstance(chat_messages_array[-1], Message):
         return chat_messages_array[-1].content
     else:
-        return chat_messages_array[-1]
+        return str(chat_messages_array[-1])
 
 
 @mlflow.trace(span_type="PARSER")

@@ -51,8 +51,8 @@ class VisualizationAgent(mlflow.pyfunc.PythonModel):
 
             # Now, initialize the rest of the Agent
             w = WorkspaceClient(
-                host="", # will put my host
-                token="" # Will put my token
+                host="", # Will Update Later 
+                token="" # Will Update Later
             )
             self.model_serving_client = w.serving_endpoints.get_open_ai_client()
 
@@ -80,16 +80,23 @@ class VisualizationAgent(mlflow.pyfunc.PythonModel):
         ##############################################################################
         # Extract `messages` key from the `model_input`
         messages = get_messages_array(model_input)
-
+        # Make sure messages is a list, not a string
+        if isinstance(messages, str):
+            messages = [{"role": "user", "content": messages}]
         ##############################################################################
         # Parse `messages` array into the user's query & the chat history
         with mlflow.start_span(name="parse_input", span_type="PARSER") as span:
             span.set_inputs({"messages": messages})
             # in a multi-agent setting, the last message can be from another assistant, not the user
             last_message = extract_user_query_string(messages)
-            last_message_role = messages[-1]["role"]
+            # Ensure we have a valid role
+            if isinstance(messages, list) and len(messages) > 0 and isinstance(messages[-1], dict):
+                last_message_role = messages[-1].get("role", "user")
+            else:
+                last_message_role = "user"
+            # last_message_role = messages[-1]["role"]
             # Save the history inside the Agent's internal state
-            self.chat_history = extract_chat_history(messages)
+            self.chat_history = extract_chat_history(messages) if len(messages) > 1 else []
             span.set_outputs(
                 {
                     "last_message": last_message,
@@ -113,12 +120,16 @@ class VisualizationAgent(mlflow.pyfunc.PythonModel):
             span.set_inputs({"table_data": table_data})
             
             # Import from our tools
-            from tools.visualization_tools import extract_table_from_markdown
+            from tools.visualization_tools import extract_table_from_markdown, process_data_for_visualization
             
             if table_data:
                 data_code = extract_table_from_markdown(table_data)
             else:
-                data_code = "import pandas as pd\n\n# No table data found\ndf = pd.DataFrame()"
+                # Try to extract JSON data from the entire message, not just a table format
+                data_code = process_data_for_visualization(last_message)
+                if data_code == "[]" or data_code == "null":
+                    # Create fallback data for visualization
+                    data_code = json.dumps([{"category": "Fallback", "value": 100}])
             
             span.set_outputs({"data_code": data_code})
 
@@ -174,61 +185,163 @@ class VisualizationAgent(mlflow.pyfunc.PythonModel):
             
             # Execute the code to generate visualization
             result_str = python_viz_executor(viz_code)
-            result = json.loads(result_str)
+            
+            try:
+                # Try to parse the result
+                result = json.loads(result_str)
+            except json.JSONDecodeError:
+                # Handle JSON parsing errors with a fallback result
+                logging.error(f"Error parsing visualization result: {result_str}")
+                result = {
+                    "error": "Failed to parse visualization result",
+                    "console_output": result_str
+                }
             
             # Format the result for the response
-            if "image" in result:
+            if "image" in result and result["image"]:
                 image_data = result["image"]
-                image_format = result["format"]
+                image_format = result.get("format", "image/png")
                 html_img = f'<img src="data:{image_format};base64,{image_data}" alt="{title}" />'
                 
                 # Prepare the message
                 visualization_output = f"""
-## Data Visualization
+        ## Data Visualization
 
-I've analyzed the data and created a {viz_type} chart:
+        I've analyzed the data and created a {viz_type} chart:
 
-{html_img}
+        {html_img}
 
-### Why a {viz_type.capitalize()} Chart?
+        ### Why a {viz_type.capitalize()} Chart?
 
-{reason}
-"""
+        {reason}
+        """
             else:
+                # Create a fallback visualization
+                import matplotlib.pyplot as plt
+                import numpy as np
+                import io
+                import base64
+                
+                # Create a simple fallback chart
+                plt.figure(figsize=(8, 5))
+                plt.bar(['Fallback Data'], [100], color='lightblue')
+                plt.title('Fallback Visualization')
+                plt.ylabel('Value')
+                
+                # Convert to base64
+                buffer = io.BytesIO()
+                plt.savefig(buffer, format='png')
+                buffer.seek(0)
+                fallback_image = base64.b64encode(buffer.read()).decode('utf-8')
+                plt.close()
+                
                 error_msg = result.get("error", "Failed to generate visualization")
                 console_output = result.get("console_output", "")
                 
+                html_img = f'<img src="data:image/png;base64,{fallback_image}" alt="Fallback Visualization" />'
+                
                 visualization_output = f"""
-## Data Visualization
+        ## Data Visualization
 
-I attempted to create a visualization, but encountered an issue:
+        I attempted to create a visualization, but encountered an issue:
 
-**Error:** {error_msg}
+        **Error:** {error_msg}
 
-{console_output if console_output else ""}
+        {html_img}
 
-Please make sure the data is properly formatted as a markdown table.
-"""
+        This is a fallback visualization as I couldn't generate the requested chart.
+
+        {console_output if console_output else ""}
+        """
             
             span.set_outputs({"visualization_output": visualization_output})
 
-        # Return the result
-        return {
-            "content": visualization_output,
-            "messages": self.chat_history + [
-                {"role": last_message_role, "content": last_message},
-                {"role": "assistant", "content": visualization_output}
-            ],
-        }
-
+    def create_fallback_visualization(title="Fallback Visualization", message="No data available"):
+        """
+        Creates a simple fallback visualization when regular visualization fails.
+        
+        Args:
+            title (str): Title for the fallback visualization
+            message (str): Message to display on the visualization
+            
+        Returns:
+            str: Base64-encoded PNG image
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import io
+            import base64
+            
+            # Create a simple visualization
+            plt.figure(figsize=(8, 5))
+            
+            # Either create a very simple bar chart
+            plt.bar(['Fallback'], [100], color='lightblue')
+            
+            plt.title(title)
+            plt.ylabel('Value')
+            plt.axhline(y=0, color='k', linestyle='-', alpha=0.3)
+            
+            # Add the message
+            plt.figtext(0.5, 0.3, message, wrap=True, 
+                    horizontalalignment='center', fontsize=12)
+            
+            # Convert to base64
+            buffer = io.BytesIO()
+            plt.savefig(buffer, format='png')
+            buffer.seek(0)
+            image_data = base64.b64encode(buffer.read()).decode('utf-8')
+            plt.close()
+            
+            return f"data:image/png;base64,{image_data}"
+        except Exception as e:
+            return ""
     def extract_table_from_message(self, message: str) -> Optional[str]:
-        """Extract markdown table from the message if present."""
-        # Look for a markdown table pattern
+        """Extract table data from the message in various formats."""
+        # First try to find a markdown table pattern
         table_pattern = r'(\|[^\n]*\|\n\|[-:| ]+\|\n(?:\|[^\n]*\|\n?)+)'
         table_match = re.search(table_pattern, message)
         
         if table_match:
             return table_match.group(1)
+            
+        # If no markdown table, look for JSON data
+        try:
+            # Look for JSON-like patterns
+            json_pattern = r'\[\s*\{.*?\}\s*(?:,\s*\{.*?\}\s*)*\]'
+            json_match = re.search(json_pattern, message, re.DOTALL)
+            if json_match:
+                # Validate it's proper JSON
+                potential_json = json_match.group(0)
+                json.loads(potential_json)  # This will raise an exception if not valid JSON
+                return potential_json
+        except json.JSONDecodeError:
+            pass
+            
+        # If still no data found, check for key-value pairs
+        # This is a fallback for when data isn't in a standard format
+        kv_pattern = r'"([^"]+)"\s*:\s*([^,}\s]+|"[^"]+")'
+        kv_matches = re.findall(kv_pattern, message)
+        
+        if kv_matches and len(kv_matches) >= 2:
+            # Convert key-value pairs to a JSON object
+            data_obj = {}
+            for key, value in kv_matches:
+                # Clean up and try to convert numeric values
+                try:
+                    clean_value = value.strip('"')
+                    if '.' in clean_value and clean_value.replace('.', '', 1).isdigit():
+                        data_obj[key] = float(clean_value)
+                    elif clean_value.isdigit():
+                        data_obj[key] = int(clean_value)
+                    else:
+                        data_obj[key] = clean_value
+                except ValueError:
+                    data_obj[key] = value
+                    
+            return json.dumps([data_obj])
+            
+        # If no structured data found, return None
         return None
 
     def chat_completion(self, messages: List[Dict[str, str]], tools: bool = False):

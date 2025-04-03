@@ -302,6 +302,7 @@ class MultiAgentSupervisor(mlflow.pyfunc.PythonModel):
             
         # Special handling for visualization agent when previous agent was Genie
         modified_input_messages = input_messages.copy()
+        # Modify this section where you handle special processing for visualization agent
         if agent_name == "Visualization" and self.state.last_agent_called == "Genie":
             from tools.visualization_tools import connect_genie_to_visualization
             
@@ -355,17 +356,30 @@ class MultiAgentSupervisor(mlflow.pyfunc.PythonModel):
                 raise ValueError(
                     f"Invalid agent loading mode: {self.agent_config.agent_loading_mode}"
                 )
+        # In the _call_supervised_agent method, enhance the error handling for the visualization agent:
         except Exception as e:
             # Handle visualization errors with fallback
             if agent_name == "Visualization":
                 logging.error(f"Error in visualization agent: {str(e)}")
                 from tools.visualization_tools import process_data_for_visualization
                 
-                fallback_message = "I encountered an issue creating the visualization. Using fallback data instead."
+                fallback_message = "I attempted to create a visualization but encountered technical difficulties. Here's a simple visualization with fallback data."
                 fallback_data = process_data_for_visualization("[]")
                 
+                # Create a basic visualization with fallback data
+                from tools.visualization_tools import create_bar_chart
+                fallback_viz = create_bar_chart(
+                    data=json.dumps([{"x": "Data", "y": 100}]), 
+                    title="Fallback Visualization",
+                    x_label="Category", 
+                    y_label="Value",
+                    orientation="vertical",
+                    color="blue",
+                    figsize="8,5"
+                )
+                
                 raw_agent_output = {
-                    "content": fallback_message,
+                    "content": f"{fallback_message}\n\n<img src='{fallback_viz}' alt='Fallback Visualization' />",
                     "messages": input_messages + [{
                         "role": "assistant",
                         "content": fallback_message
