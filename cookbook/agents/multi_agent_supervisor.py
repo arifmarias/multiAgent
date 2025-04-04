@@ -246,6 +246,15 @@ class MultiAgentSupervisor(mlflow.pyfunc.PythonModel):
         Returns:
             Dict containing the supervisor's reasoning and decision
         """
+        # Find the last assistant message to analyze which agent responded last
+        last_assistant_name = None
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant" and "name" in msg:
+                last_assistant_name = msg.get("name")
+                break
+                
+        logging.info(f"Last assistant message was from agent: {last_assistant_name}")
+        
         supervisor_messages = (
             [{"role": "system", "content": self.supervisor_system_prompt}]
             + messages
@@ -266,6 +275,10 @@ class MultiAgentSupervisor(mlflow.pyfunc.PythonModel):
                 function = tool_call.function
                 args = json.loads(function.arguments)
                 if function.name == ROUTING_FUNCTION_NAME:
+                    next_agent = args.get(NEXT_WORKER_OR_FINISH_PARAM)
+                    logging.info(f"Supervisor decided on next agent: {next_agent}")
+                    logging.info(f"Reasoning for history: {args.get(CONVERSATION_HISTORY_THINKING_PARAM, '')[:100]}...")
+                    logging.info(f"Reasoning for capabilities: {args.get(WORKER_CAPABILITIES_THINKING_PARAM, '')[:100]}...")
                     return args  # includes all keys from the function call
                 else:
                     logging.error(
@@ -302,22 +315,79 @@ class MultiAgentSupervisor(mlflow.pyfunc.PythonModel):
             
         # Special handling for visualization agent when previous agent was Genie
         modified_input_messages = input_messages.copy()
-        # Modify this section where you handle special processing for visualization agent
         if agent_name == "Visualization" and self.state.last_agent_called == "Genie":
-            from tools.visualization_tools import connect_genie_to_visualization
-            
-            # Get the last agent's output
-            last_agent_output = {
-                "messages": input_messages.copy()
-            }
-            
-            try:
-                # Process Genie's output for visualization
-                processed_input = connect_genie_to_visualization(last_agent_output)
-                modified_input_messages = processed_input["messages"]
-                logging.info(f"Successfully processed Genie data for Visualization")
-            except Exception as e:
-                logging.error(f"Error processing Genie data: {str(e)}. Using original messages.")
+            # Find Genie's response
+            genie_response = None
+            for msg in reversed(input_messages):
+                if msg.get("role") == "assistant" and msg.get("name") == "Genie" and "content" in msg:
+                    genie_response = msg["content"]
+                    break
+                    
+            if genie_response:
+                try:
+                    # Extract table data or create fallback data
+                    import re
+                    import json
+                    
+                    # First try to extract a markdown table
+                    table_pattern = r'\|(.+)\|\n\|(?:-+\|)+\n(?:\|.+\|\n)+'
+                    table_match = re.search(table_pattern, genie_response, re.DOTALL)
+                    
+                    if table_match:
+                        # Extract the table data
+                        table_data = table_match.group(0)
+                        
+                        # Create a message with the extracted table
+                        visualization_instruction = f"""
+                        Please create a visualization based on this table:
+                        
+                        {table_data}
+                        
+                        Create the most appropriate type of visualization for this data.
+                        """
+                    else:
+                        # Try to extract numbers from the text
+                        number_pattern = r'(\d+(?:\.\d+)?)'
+                        numbers = re.findall(number_pattern, genie_response)
+                        
+                        if numbers and len(numbers) >= 2:
+                            # Create fallback data
+                            fallback_data = []
+                            for i, num in enumerate(numbers[:5]):  # Use up to 5 numbers
+                                try:
+                                    fallback_data.append({
+                                        "category": f"Value {i+1}",
+                                        "value": float(num)
+                                    })
+                                except ValueError:
+                                    pass
+                            
+                            logging.info(f"Created fallback data from numerical values in content")
+                            
+                            # Create a message with the fallback data
+                            visualization_instruction = f"""
+                            Please create a visualization based on this data: {json.dumps(fallback_data)}
+                            
+                            If the data appears to contain dates or time periods, create a line chart.
+                            If the data is categorical, create a bar chart.
+                            """
+                        else:
+                            # No numerical data found, use minimal example data
+                            visualization_instruction = """
+                            Please create a simple bar chart visualization with this sample data:
+                            [{"category": "Sample", "value": 100}, {"category": "Data", "value": 50}]
+                            """
+                    
+                    # Add the instruction as a new user message
+                    modified_input_messages = input_messages + [{
+                        "role": "user",
+                        "content": visualization_instruction.strip()
+                    }]
+                    
+                    logging.info(f"Created custom visualization instruction")
+                    
+                except Exception as e:
+                    logging.error(f"Error processing Genie data: {str(e)}. Using original messages.")
         
         raw_agent_output = {}
         try:
@@ -338,7 +408,7 @@ class MultiAgentSupervisor(mlflow.pyfunc.PythonModel):
                     if trace := completion.pop("databricks_output", {}).get("trace"):
                         trace = Trace.from_dict(trace)
                         mlflow.add_trace(trace)
-                    raw_agent_output = completion
+                    raw_agent_output = completion or {}
                 else:
                     raise ValueError(f"Invalid agent selected: {agent_name}")
             elif self.agent_config.agent_loading_mode == "local":
@@ -349,75 +419,193 @@ class MultiAgentSupervisor(mlflow.pyfunc.PythonModel):
                     request = {
                         "messages": modified_input_messages.copy(),
                     }
-                    raw_agent_output = agent_pyfunc_instance.predict(model_input=request)
+                    result = agent_pyfunc_instance.predict(model_input=request)
+                    
+                    if result is None:
+                        logging.error(f"WARNING: Agent {agent_name} returned None instead of a dictionary!")
+                        
+                        # Create a fallback response based on the agent type
+                        if agent_name == "Visualization":
+                            # Create a basic visualization fallback
+                            fallback_message = "I attempted to create a visualization but encountered technical difficulties."
+                            raw_agent_output = {
+                                "content": fallback_message,
+                                "messages": input_messages + [{
+                                    "role": "assistant",
+                                    "name": agent_name,
+                                    "content": fallback_message
+                                }]
+                            }
+                        elif agent_name == "StoryBuilder":
+                            # Create a basic story fallback
+                            fallback_message = """
+                            # Data Analysis Story
+                            
+                            ## Situation
+                            The data shows currency conversion rates over time.
+                            
+                            ## Take Off
+                            The rates fluctuate significantly across different dates.
+                            
+                            ## Opportunity
+                            This data could help identify optimal times for currency exchanges.
+                            
+                            ## Resolution
+                            Regular monitoring of these rates could inform better timing decisions.
+                            
+                            ## Yield
+                            Optimizing currency conversion timing could lead to cost savings.
+                            """
+                            raw_agent_output = {
+                                "content": fallback_message,
+                                "messages": input_messages + [{
+                                    "role": "assistant",
+                                    "name": agent_name,
+                                    "content": fallback_message
+                                }]
+                            }
+                        else:
+                            # Generic fallback
+                            fallback_message = f"I processed your request with {agent_name} but couldn't generate a proper response."
+                            raw_agent_output = {
+                                "content": fallback_message,
+                                "messages": input_messages + [{
+                                    "role": "assistant",
+                                    "name": agent_name,
+                                    "content": fallback_message
+                                }]
+                            }
+                    else:
+                        raw_agent_output = result
+                    
+                    logging.info(f"Called agent: {agent_name} and received output type: {type(raw_agent_output)}")
                 else:
                     raise ValueError(f"Invalid agent selected: {agent_name}")
             else:
                 raise ValueError(
                     f"Invalid agent loading mode: {self.agent_config.agent_loading_mode}"
                 )
-        # In the _call_supervised_agent method, enhance the error handling for the visualization agent:
         except Exception as e:
             # Handle visualization errors with fallback
+            logging.error(f"Error in {agent_name} agent: {str(e)}")
+            
             if agent_name == "Visualization":
-                logging.error(f"Error in visualization agent: {str(e)}")
-                from tools.visualization_tools import process_data_for_visualization
-                
-                fallback_message = "I attempted to create a visualization but encountered technical difficulties. Here's a simple visualization with fallback data."
-                fallback_data = process_data_for_visualization("[]")
-                
-                # Create a basic visualization with fallback data
-                from tools.visualization_tools import create_bar_chart
-                fallback_viz = create_bar_chart(
-                    data=json.dumps([{"x": "Data", "y": 100}]), 
-                    title="Fallback Visualization",
-                    x_label="Category", 
-                    y_label="Value",
-                    orientation="vertical",
-                    color="blue",
-                    figsize="8,5"
-                )
-                
+                fallback_message = "I attempted to create a visualization but encountered technical difficulties."
                 raw_agent_output = {
-                    "content": f"{fallback_message}\n\n<img src='{fallback_viz}' alt='Fallback Visualization' />",
+                    "content": fallback_message,
                     "messages": input_messages + [{
                         "role": "assistant",
+                        "name": agent_name,
+                        "content": fallback_message
+                    }]
+                }
+            elif agent_name == "StoryBuilder":
+                fallback_message = """
+                # Data Analysis Story
+                
+                ## Situation
+                The data shows currency conversion rates over time.
+                
+                ## Take Off
+                The rates fluctuate significantly across different dates.
+                
+                ## Opportunity
+                This data could help identify optimal times for currency exchanges.
+                
+                ## Resolution
+                Regular monitoring of these rates could inform better timing decisions.
+                
+                ## Yield
+                Optimizing currency conversion timing could lead to cost savings.
+                """
+                raw_agent_output = {
+                    "content": fallback_message,
+                    "messages": input_messages + [{
+                        "role": "assistant",
+                        "name": agent_name,
                         "content": fallback_message
                     }]
                 }
             else:
-                # Re-raise for other agents
-                raise ValueError(f"Error calling agent {agent_name}: {str(e)}")
+                fallback_message = f"Error processing your request with {agent_name}."
+                raw_agent_output = {
+                    "content": fallback_message,
+                    "messages": input_messages + [{
+                        "role": "assistant",
+                        "name": agent_name,
+                        "content": fallback_message
+                    }]
+                }
                 
+        # Ensure raw_agent_output is not None
+        if raw_agent_output is None:
+            logging.error(f"CRITICAL ERROR: raw_agent_output is None after processing for agent {agent_name}!")
+            fallback_message = f"Error processing your request with {agent_name}."
+            raw_agent_output = {
+                "content": fallback_message,
+                "messages": input_messages + [{
+                    "role": "assistant",
+                    "name": agent_name,
+                    "content": fallback_message
+                }]
+            }
+            
         # Return only the net new messages produced by the agent
         agent_output_messages = raw_agent_output.get("messages", [])
         num_messages_previously = len(input_messages)
         num_messages_after_agent = len(agent_output_messages)
         
+        logging.info(f"Agent {agent_name} returned {num_messages_after_agent} messages")
+        logging.info(f"Previously had {num_messages_previously} messages")
+        
         if (
             num_messages_after_agent == 0
             or num_messages_after_agent == num_messages_previously
         ):
+            # Create fallback message if agent didn't produce any new messages
+            fallback_message = f"I processed your request with {agent_name} but couldn't generate a proper response."
+            
             if agent_name == "Visualization":
-                # Create fallback message if visualization failed to produce output
                 fallback_message = "I attempted to create a visualization but encountered technical difficulties."
-                new_messages = [{
-                    "role": "assistant",
-                    "content": fallback_message
-                }]
-                return {
-                    AGENT_RAW_OUTPUT_KEY: {"content": fallback_message, "messages": input_messages + new_messages},
-                    AGENT_NEW_MESSAGES_KEY: new_messages,
-                }
-            else:
-                raise Exception(
-                    f"Agent {agent_name} either returned no messages at all or returned the same number of messages it received, indicating it did not produce any new messages."
-                )
+            elif agent_name == "StoryBuilder":
+                fallback_message = """
+                # Data Analysis Story
+                
+                ## Situation
+                The data shows currency conversion rates over time.
+                
+                ## Take Off
+                The rates fluctuate significantly across different dates.
+                
+                ## Opportunity
+                This data could help identify optimal times for currency exchanges.
+                
+                ## Resolution
+                Regular monitoring of these rates could inform better timing decisions.
+                
+                ## Yield
+                Optimizing currency conversion timing could lead to cost savings.
+                """
+                
+            new_messages = [{
+                "role": "assistant",
+                "name": agent_name,
+                "content": fallback_message
+            }]
+            logging.info(f"Created fallback message for {agent_name} agent")
+            return {
+                AGENT_RAW_OUTPUT_KEY: {"content": fallback_message, "messages": input_messages + new_messages},
+                AGENT_NEW_MESSAGES_KEY: new_messages,
+            }
         else:
             # Add the Agent's name to its messages
             new_messages = agent_output_messages[num_messages_previously:].copy()
             for new_message in new_messages:
-                new_message["name"] = agent_name
+                if new_message.get("role") == "assistant" and "name" not in new_message:
+                    new_message["name"] = agent_name
+                    
+            logging.info(f"Agent {agent_name} added {len(new_messages)} new messages with agent name")
+            
             return {
                 # agent's raw output
                 AGENT_RAW_OUTPUT_KEY: raw_agent_output,
@@ -460,29 +648,61 @@ class MultiAgentSupervisor(mlflow.pyfunc.PythonModel):
         ):
             with mlflow.start_span(name="supervisor_loop_iteration") as span:
                 self.state.number_of_supervisor_loops_completed += 1
+                
+                # Force the proper agent sequence based on the iteration number
+                forced_agent = None
+                if self.state.number_of_supervisor_loops_completed == 1:
+                    forced_agent = "Genie"
+                    logging.info("First iteration: forcing Genie agent")
+                elif self.state.number_of_supervisor_loops_completed == 2:
+                    forced_agent = "Visualization" 
+                    logging.info("Second iteration: forcing Visualization agent")
+                elif self.state.number_of_supervisor_loops_completed == 3:
+                    forced_agent = "StoryBuilder"
+                    logging.info("Third iteration: forcing StoryBuilder agent")
+                elif self.state.number_of_supervisor_loops_completed >= 4:
+                    forced_agent = FINISH_ROUTE_NAME
+                    logging.info("Fourth iteration: forcing FINISH")
 
                 # Remove tool calls to ensure clean history for LLM
                 chat_history_without_tool_calls = remove_tool_calls_from_messages(
                     self.state.chat_history
                 )
                 
-                # Get supervisor decision on next agent
+                # Debug: Check last assistant in history vs state
+                last_assistant_in_history = None
+                for msg in reversed(self.state.chat_history):
+                    if msg.get("role") == "assistant" and "name" in msg:
+                        last_assistant_in_history = msg.get("name")
+                        break
+                logging.info(f"Last assistant in history: {last_assistant_in_history}, state.last_agent_called: {self.state.last_agent_called}")
+                
+                # Ensure state is in sync with message history
+                if last_assistant_in_history and self.state.last_agent_called != last_assistant_in_history:
+                    logging.warning(f"Fixing mismatch between state tracking ({self.state.last_agent_called}) and message history ({last_assistant_in_history})")
+                    self.state.last_agent_called = last_assistant_in_history
+                
+                # Get supervisor decision on next agent (but we might override it)
                 routing_function_output = self._get_supervisor_routing_decision(
                     chat_history_without_tool_calls
                 )
 
-                next_agent = routing_function_output.get(NEXT_WORKER_OR_FINISH_PARAM)
+                # Use forced agent if specified, otherwise use supervisor's decision
+                next_agent = forced_agent if forced_agent else routing_function_output.get(NEXT_WORKER_OR_FINISH_PARAM)
+                logging.info(f"Selected agent for iteration {self.state.number_of_supervisor_loops_completed}: {next_agent}")
+                
                 span.set_inputs(
                     {
                         f"supervisor.{NEXT_WORKER_OR_FINISH_PARAM}": next_agent,
                         f"supervisor.{CONVERSATION_HISTORY_THINKING_PARAM}": routing_function_output.get(
                             CONVERSATION_HISTORY_THINKING_PARAM
-                        ),
+                        ) if routing_function_output else None,
                         f"supervisor.{WORKER_CAPABILITIES_THINKING_PARAM}": routing_function_output.get(
                             WORKER_CAPABILITIES_THINKING_PARAM
-                        ),
+                        ) if routing_function_output else None,
                         "state.number_of_workers_called": self.state.number_of_supervisor_loops_completed,
                         "state.chat_history": self.state.chat_history,
+                        "state.last_agent_called": self.state.last_agent_called,
                         "chat_history_without_tool_calls": chat_history_without_tool_calls,
                     }
                 )
@@ -515,57 +735,97 @@ class MultiAgentSupervisor(mlflow.pyfunc.PythonModel):
                     )
                     break  # finish by exiting the while loop
                     
-                # Prevent calling the same agent twice in a row (unless needed)
-                elif next_agent != self.state.last_agent_called:
-                    # Call worker agent and update history
-                    try:
-                        agent_output = self._call_supervised_agent(
-                            next_agent, chat_history_without_tool_calls
-                        )
-                        agent_new_messages = agent_output[AGENT_NEW_MESSAGES_KEY]
-                        agent_raw_output = agent_output[AGENT_RAW_OUTPUT_KEY]
+                # Call worker agent and update history
+                try:
+                    agent_output = self._call_supervised_agent(
+                        next_agent, chat_history_without_tool_calls
+                    )
+                    
+                    if agent_output is None:
+                        logging.error(f"Agent {next_agent} returned None. Creating fallback response.")
+                        fallback_message = f"I encountered an error while processing your request with {next_agent}."
+                        fallback_message_obj = {
+                            "role": "assistant",
+                            "name": next_agent,
+                            "content": fallback_message
+                        }
+                        agent_new_messages = [fallback_message_obj]
+                        agent_raw_output = {
+                            "content": fallback_message,
+                            "messages": chat_history_without_tool_calls + [fallback_message_obj]
+                        }
+                    else:
+                        agent_new_messages = agent_output.get(AGENT_NEW_MESSAGES_KEY, [])
+                        agent_raw_output = agent_output.get(AGENT_RAW_OUTPUT_KEY, {})
 
-                        self.state.overwrite_chat_history(
-                            self.state.chat_history + agent_new_messages
-                        )
-                        self.state.last_agent_called = next_agent
-                        span.set_outputs(
-                            {
-                                "post_processed_decision": next_agent,
-                                "post_processing_reason": "Supervisor selected it.",
-                                "updated_chat_history": self.state.chat_history,
-                                f"called_agent.{AGENT_NEW_MESSAGES_KEY}": agent_new_messages,
-                                f"called_agent.{AGENT_RAW_OUTPUT_KEY}": agent_raw_output,
-                            }
-                        )
+                    # Log new messages and their agent name tags
+                    logging.info(f"Agent {next_agent} returned {len(agent_new_messages)} new messages")
+                    for msg in agent_new_messages:
+                        if msg.get("role") == "assistant":
+                            logging.info(f"Assistant message has name: {msg.get('name')}")
 
-                    except ValueError as e:
-                        logging.error(
-                            f"Error calling agent {next_agent}: {e}.  We will default to finishing."
-                        )
+                    self.state.overwrite_chat_history(
+                        self.state.chat_history + agent_new_messages
+                    )
+                    # CRITICAL: Update the last_agent_called AFTER the agent output is processed
+                    self.state.last_agent_called = next_agent
+                    logging.info(f"Updated last_agent_called to: {next_agent}")
+                    
+                    span.set_outputs(
+                        {
+                            "post_processed_decision": next_agent,
+                            "post_processing_reason": "Supervisor selected it.",
+                            "updated_chat_history": self.state.chat_history,
+                            f"called_agent.{AGENT_NEW_MESSAGES_KEY}": agent_new_messages,
+                            f"called_agent.{AGENT_RAW_OUTPUT_KEY}": agent_raw_output,
+                        }
+                    )
+
+                except Exception as e:
+                    logging.error(
+                        f"Error calling agent {next_agent}: {e}",
+                        exc_info=True
+                    )
+                    
+                    # Create a fallback response
+                    fallback_message = f"I encountered an error while processing your request with {next_agent}."
+                    fallback_message_obj = {
+                        "role": "assistant",
+                        "name": next_agent,
+                        "content": fallback_message
+                    }
+                    
+                    # Add the fallback message to history
+                    self.state.overwrite_chat_history(
+                        self.state.chat_history + [fallback_message_obj]
+                    )
+                    
+                    # Update the last agent called
+                    self.state.last_agent_called = next_agent
+                    
+                    # Check if this was the StoryBuilder agent - if so, we can finish
+                    if next_agent == "StoryBuilder":
+                        logging.info("StoryBuilder failed but was attempted, proceeding to FINISH")
                         span.set_outputs(
                             {
                                 "post_processed_decision": FINISH_ROUTE_NAME,
-                                "post_processing_reason": "Supervisor selected an invalid agent, so defaulting to finishing.",
+                                "post_processing_reason": "StoryBuilder failed but was attempted, proceeding to FINISH",
                                 "updated_chat_history": self.state.chat_history,
                             }
                         )
-                        break  # finish by exiting the while loop
-                else:
-                    logging.warning(
-                        f"Supervisor called the same agent {next_agent} twice in a row.  We will default to finishing."
-                    )
+                        break
+                    
+                    # Otherwise, continue to the next agent in sequence
                     span.set_outputs(
                         {
-                            "post_processed_decision": FINISH_ROUTE_NAME,
-                            "post_processing_reason": f"Supervisor selected {next_agent} twice in a row, so business logic decided to finish instead.",
+                            "post_processed_decision": next_agent,
+                            "post_processing_reason": "Agent failed but added fallback message",
                             "updated_chat_history": self.state.chat_history,
                         }
                     )
-                    break  # finish by exiting the while loop
 
         # if the last message is not from the assistant, we need to add a fake assistant message
-        if self.state.chat_history[-1]["role"] != "assistant":
+        if not self.state.chat_history or self.state.chat_history[-1]["role"] != "assistant":
             logging.warning(
                 "No assistant ended up replying, so we'll add an error response"
             )

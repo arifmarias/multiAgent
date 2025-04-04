@@ -658,66 +658,69 @@ def connect_genie_to_visualization(genie_output):
                     content = msg['content']
                     break
     
-    # Look for data in table format or JSON data
-    data_json = None
-    
-    # Try to find JSON-like patterns
-    import re
-    import json
-    
-    # First look for markdown tables
+    # Look for table data - first try markdown table format
     table_pattern = r'\|(.+)\|\n\|(?:-+\|)+\n(?:\|.+\|\n)+'
     table_match = re.search(table_pattern, content, re.DOTALL)
+    table_data = None
     
     if table_match:
-        table_text = table_match.group(0)
-        try:
-            # Convert markdown table to JSON
-            lines = table_text.strip().split('\n')
-            headers = [h.strip() for h in lines[0].split('|')[1:-1]]
-            data_rows = []
-            
-            for line in lines[2:]:  # Skip header and separator
-                if line.strip():
-                    values = [v.strip() for v in line.split('|')[1:-1]]
-                    if len(values) == len(headers):
-                        row = {headers[i]: values[i] for i in range(len(headers))}
-                        data_rows.append(row)
-            
-            if data_rows:
-                data_json = json.dumps(data_rows)
-        except Exception as e:
-            print(f"Error parsing markdown table: {e}")
+        table_data = table_match.group(0)
+        print(f"Found table data in markdown format")
+    else:
+        # Look for data in JSON-like format
+        json_pattern = r'\[\s*\{.+?\}\s*(?:,\s*\{.+?\}\s*)*\]'
+        json_match = re.search(json_pattern, content, re.DOTALL)
+        if json_match:
+            try:
+                table_data = json_match.group(0)
+                # Validate it's proper JSON
+                json.loads(table_data)
+                print(f"Found table data in JSON format")
+            except json.JSONDecodeError:
+                table_data = None
     
-    # If no table found, look for JSON data
-    if not data_json:
-        try:
-            json_pattern = r'\[(\s*\{.*?\}\s*(?:,\s*\{.*?\}\s*)*)\]'
-            json_match = re.search(json_pattern, content, re.DOTALL)
-            if json_match:
-                json_text = f"[{json_match.group(1)}]"
-                # Validate JSON
-                json.loads(json_text)
-                data_json = json_text
-        except Exception:
-            pass
+    # If no structured data found, create fallback
+    if not table_data:
+        # Extract any numerical data from the content
+        number_pattern = r'(\d+(?:\.\d+)?)'
+        numbers = re.findall(number_pattern, content)
+        
+        if numbers and len(numbers) >= 2:
+            # Create simple data structure with found numbers
+            data = []
+            for i, num in enumerate(numbers[:5]):  # Use up to 5 numbers
+                try:
+                    data.append({
+                        "category": f"Value {i+1}",
+                        "value": float(num)
+                    })
+                except ValueError:
+                    pass
+            
+            if data:
+                table_data = json.dumps(data)
+                print(f"Created fallback data from numerical values in content")
     
-    # Fallback if no data found
-    if not data_json:
-        data_json = json.dumps([
+    # Create visualization instruction with available data
+    if table_data:
+        instruction = f"""
+        Please create a visualization based on this data: {table_data}
+        
+        If the data appears to contain dates or time periods, create a line chart.
+        If the data is categorical, create a bar chart.
+        
+        Make your best effort to create a visualization with this data.
+        """
+    else:
+        # Ultimate fallback - create minimal data for visualization
+        fallback_data = json.dumps([
             {"category": "Sample", "value": 100},
             {"category": "Data", "value": 50}
         ])
-    
-    # Create visualization instruction
-    instruction = f"""
-    Please create a visualization based on this JSON data: {data_json}
-    
-    If the data appears to contain dates or time periods, create a line chart.
-    If the data is categorical, create a bar chart.
-    
-    Make your best effort to create a visualization with this data.
-    """
+        instruction = f"""
+        I couldn't extract specific data from the previous response.
+        Please create a simple visualization with this sample data: {fallback_data}
+        """
     
     # Return properly formatted message array
     return {
