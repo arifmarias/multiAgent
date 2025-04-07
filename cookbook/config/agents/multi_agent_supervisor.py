@@ -143,6 +143,7 @@ class MultiAgentSupervisorConfig(SerializableConfig):
     Databricks Model Serving endpoint name.
     This is the LLM used by the supervisor to make decisions.
     """
+    # genie_space_id: str
 
     llm_parameters: LLMParametersConfig
     """

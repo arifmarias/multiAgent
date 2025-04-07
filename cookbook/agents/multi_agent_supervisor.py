@@ -877,5 +877,17 @@ class MultiAgentSupervisor(mlflow.pyfunc.PythonModel):
             return traced_create(model=endpoint_name, messages=messages, **llm_options)
 
 
-# tell MLflow logging where to find the agent's code
-set_model(MultiAgentSupervisor())
+# Import needed classes
+from cookbook.config.agents.multi_agent_supervisor import MultiAgentSupervisorConfig
+from cookbook.config.shared.llm import LLMParametersConfig
+
+# Create a minimal default configuration for MLflow
+default_config = MultiAgentSupervisorConfig(
+    llm_endpoint_name="databricks-llama-2-70b-chat",  # Placeholder value
+    llm_parameters=LLMParametersConfig(temperature=0.1, max_tokens=1500),
+    agents=[],  # Empty list to avoid initialization errors
+    max_supervisor_loops=3
+)
+
+# Register the class with the default config
+set_model(MultiAgentSupervisor(agent_config=default_config))

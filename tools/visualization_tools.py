@@ -441,7 +441,19 @@ def extract_table_from_markdown(markdown_text: str) -> str:
                     
                     # Extract values, handling index column if present
                     parts = [p.strip() for p in row.split('|')]
-                    values = [p for p in parts if p]
+                    
+                    # Skip the first column if it's a numeric index
+                    is_first_column_index = False
+                    if len(parts) > 1 and parts[1].strip().isdigit():
+                        is_first_column_index = True
+                    
+                    values = []
+                    for j, part in enumerate(parts):
+                        if part.strip():
+                            # Skip the part if it's the index column
+                            if is_first_column_index and j == 1:
+                                continue
+                            values.append(part.strip())
                     
                     if len(values) >= 2:  # Need at least two values
                         row_data = {}
@@ -486,7 +498,7 @@ def extract_table_from_markdown(markdown_text: str) -> str:
                 headers = []
                 for part in rows[0].split('|'):
                     part = part.strip()
-                    if part:
+                    if part and not part.isdigit():  # Skip index columns
                         headers.append(part)
                 
                 # Process data rows (skip header)
@@ -496,8 +508,21 @@ def extract_table_from_markdown(markdown_text: str) -> str:
                     if '|' not in row or '-|-' in row:
                         continue
                     
-                    # Extract values
-                    values = [v.strip() for v in row.split('|') if v.strip()]
+                    # Extract values, handling index column if present
+                    parts = [p.strip() for p in row.split('|')]
+                    
+                    # Determine if first column is an index
+                    is_first_column_index = False
+                    if len(parts) > 1 and parts[1].strip().isdigit():
+                        is_first_column_index = True
+                    
+                    values = []
+                    for j, part in enumerate(parts):
+                        if part.strip():
+                            # Skip if it's the index column
+                            if is_first_column_index and j == 1:
+                                continue
+                            values.append(part.strip())
                     
                     if len(values) >= 2:  # Need at least two values
                         row_data = {}
@@ -836,7 +861,7 @@ def process_data_from_table_text(table_text: str) -> str:
         headers = []
         for part in header_line.split('|'):
             part = part.strip()
-            if part:
+            if part and not part.isdigit():  # Skip numeric headers (likely indices)
                 headers.append(part)
         
         # Process data rows
@@ -848,7 +873,19 @@ def process_data_from_table_text(table_text: str) -> str:
                 
             # Split by pipe and clean values
             parts = [p.strip() for p in line.split('|')]
-            values = [p for p in parts if p]
+            
+            # Determine if first column is an index
+            is_first_column_index = False
+            if len(parts) > 1 and parts[1].strip().isdigit():
+                is_first_column_index = True
+            
+            values = []
+            for j, part in enumerate(parts):
+                if part.strip():
+                    # Skip if it's the index column
+                    if is_first_column_index and j == 1:
+                        continue
+                    values.append(part.strip())
             
             if len(values) >= 2:  # Need at least 2 values for a meaningful row
                 row_data = {}
@@ -997,7 +1034,21 @@ def connect_genie_to_visualization(genie_output):
                     
                     # Extract values, handling index column if present
                     parts = [p.strip() for p in row.split('|')]
-                    values = [p for p in parts if p and not (p.isdigit() and parts.index(p) == 1)]  # Skip index
+                    
+                    # Determine if first column is an index
+                    is_first_column_index = False
+                    for j, part in enumerate(parts):
+                        if j == 1 and part.strip().isdigit():  # First column after initial empty split
+                            is_first_column_index = True
+                            break
+                    
+                    values = []
+                    for j, part in enumerate(parts):
+                        if part.strip():
+                            # Skip if it's the index column
+                            if is_first_column_index and j == 1:
+                                continue
+                            values.append(part.strip())
                     
                     if len(values) >= 2:  # Need at least date and value
                         row_data = {}
