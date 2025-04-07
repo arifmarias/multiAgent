@@ -404,89 +404,59 @@ def extract_table_from_markdown(markdown_text: str) -> str:
         # Handle empty input
         if not markdown_text or markdown_text.strip() == "":
             return json.dumps([{"category": "No Data", "value": 0}])
-        
-        # First, try to extract from JSON format (Genie specific)
-        json_pattern = r'{"sql_query":[^}]*,"response":[^}]*,"data_table":"([^"]*)"'
+            
+        # First try to extract escaped JSON with data_table
+        json_pattern = r'"data_table":\s*"([^"\\]*(?:\\.[^"\\]*)*)"'
         json_match = re.search(json_pattern, markdown_text, re.DOTALL)
         
         if json_match:
-            logging.info("Found JSON data_table in text")
-            table_text = json_match.group(1)
-            # Handle escaped characters
-            table_text = table_text.replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\')
+            escaped_table = json_match.group(1)
+            # Unescape the string
+            table_text = escaped_table.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
             
             # Process the table rows
             rows = table_text.strip().split('\n')
             if len(rows) >= 2:  # Need at least header and one data row
-                # Find header row - skip index column if present
+                # Identify header row
                 header_row_idx = 0
-                if all(c.isdigit() or c in ' |:-' for c in rows[0]):
-                    header_row_idx = 1
+                for i, row in enumerate(rows):
+                    if ('usage_date' in row.lower() or 'date' in row.lower()) and '|' in row:
+                        header_row_idx = i
+                        break
                 
-                if header_row_idx < len(rows):
-                    header_row = rows[header_row_idx]
-                    headers = [h.strip() for h in header_row.split('|') if h.strip()]
-                    
-                    # Process data rows
-                    data_rows = []
-                    for row in rows[header_row_idx+1:]:
-                        if '|' not in row or '-|-' in row:  # Skip separator rows
-                            continue
-                        
-                        values = [v.strip() for v in row.split('|') if v.strip()]
-                        if len(values) >= 2:  # Need at least two values
-                            row_data = {}
-                            for i, val in enumerate(values):
-                                key = headers[i] if i < len(headers) else f"column_{i}"
-                                
-                                # Try to convert to numeric
-                                try:
-                                    if val.replace('.', '', 1).isdigit():
-                                        if '.' in val:
-                                            row_data[key] = float(val)
-                                        else:
-                                            row_data[key] = int(val)
-                                    else:
-                                        row_data[key] = val
-                                except (ValueError, TypeError):
-                                    row_data[key] = val
-                                    
-                            data_rows.append(row_data)
-                    
-                    if data_rows:
-                        logging.info(f"Successfully extracted {len(data_rows)} rows from JSON data_table")
-                        return json.dumps(data_rows)
-        
-        # If JSON approach failed, try direct table pattern
-        table_pattern = r'(\|[^\n]*\|[^\n]*\|[^\n]*(?:\n\|[^\n]*\|[^\n]*\|[^\n]*)+)'
-        table_match = re.search(table_pattern, markdown_text, re.MULTILINE)
-        
-        if table_match:
-            table_text = table_match.group(1)
-            rows = table_text.strip().split('\n')
-            
-            # Need at least two rows to make a valid table (header + data)
-            if len(rows) >= 2:
-                # Find header row
-                header_row = rows[0]
-                headers = [h.strip() for h in header_row.split('|') if h.strip()]
+                # Extract headers
+                header_row = rows[header_row_idx] if header_row_idx < len(rows) else rows[0]
+                headers = []
+                for part in header_row.split('|'):
+                    part = part.strip()
+                    if part and not part.isdigit():  # Skip index columns
+                        headers.append(part)
                 
-                # Process data rows
+                # Process data rows (skip header and any separator rows)
                 data_rows = []
-                for row in rows[1:]:  # Skip header row
-                    if '|' not in row or '-|-' in row:  # Skip separator rows
+                for i in range(header_row_idx + 1, len(rows)):
+                    row = rows[i]
+                    if '|' not in row or '-|-' in row:
                         continue
                     
-                    values = [v.strip() for v in row.split('|') if v.strip()]
+                    # Extract values, handling index column if present
+                    parts = [p.strip() for p in row.split('|')]
+                    values = [p for p in parts if p]
+                    
                     if len(values) >= 2:  # Need at least two values
                         row_data = {}
-                        for i, val in enumerate(values):
-                            key = headers[i] if i < len(headers) else f"column_{i}"
+                        for j, val in enumerate(values):
+                            if j < len(headers):
+                                key = headers[j]
+                            else:
+                                key = f"column_{j}"
                             
-                            # Try to convert to numeric
+                            # Convert to appropriate type
                             try:
-                                if val.replace('.', '', 1).isdigit():
-                                    if '.' in val:
+                                if val.replace('.', '', 1).replace('-', '', 1).isdigit():
+                                    if '-' in val and len(val) == 10:  # Likely a date
+                                        row_data[key] = val
+                                    elif '.' in val:
                                         row_data[key] = float(val)
                                     else:
                                         row_data[key] = int(val)
@@ -494,14 +464,71 @@ def extract_table_from_markdown(markdown_text: str) -> str:
                                     row_data[key] = val
                             except (ValueError, TypeError):
                                 row_data[key] = val
-                                
-                        data_rows.append(row_data)
+                        
+                        if row_data:
+                            data_rows.append(row_data)
+                
+                if data_rows:
+                    logging.info(f"Successfully extracted {len(data_rows)} rows from JSON data_table")
+                    return json.dumps(data_rows)
+        
+        # Next try to find a regular table pattern
+        table_pattern = r'(\|(?:[^\|\n]*\|){2,}\n\|(?:[^\|\n]*\|){2,}(?:\n\|(?:[^\|\n]*\|){2,})+)'
+        table_match = re.search(table_pattern, markdown_text, re.MULTILINE)
+        
+        if table_match:
+            table_text = table_match.group(1)
+            rows = table_text.strip().split('\n')
+            
+            # Need at least two rows
+            if len(rows) >= 2:
+                # Extract headers from the first row
+                headers = []
+                for part in rows[0].split('|'):
+                    part = part.strip()
+                    if part:
+                        headers.append(part)
+                
+                # Process data rows (skip header)
+                data_rows = []
+                for i in range(1, len(rows)):
+                    row = rows[i]
+                    if '|' not in row or '-|-' in row:
+                        continue
+                    
+                    # Extract values
+                    values = [v.strip() for v in row.split('|') if v.strip()]
+                    
+                    if len(values) >= 2:  # Need at least two values
+                        row_data = {}
+                        for j, val in enumerate(values):
+                            if j < len(headers):
+                                key = headers[j]
+                            else:
+                                key = f"column_{j}"
+                            
+                            # Convert to appropriate type
+                            try:
+                                if val.replace('.', '', 1).replace('-', '', 1).isdigit():
+                                    if '-' in val and len(val) == 10:  # Likely a date
+                                        row_data[key] = val
+                                    elif '.' in val:
+                                        row_data[key] = float(val)
+                                    else:
+                                        row_data[key] = int(val)
+                                else:
+                                    row_data[key] = val
+                            except (ValueError, TypeError):
+                                row_data[key] = val
+                        
+                        if row_data:
+                            data_rows.append(row_data)
                 
                 if data_rows:
                     logging.info(f"Successfully extracted {len(data_rows)} rows from direct table pattern")
                     return json.dumps(data_rows)
         
-        # Try to extract date-value pairs if no table found
+        # Try to extract date-value pairs
         date_pattern = r'(\d{4}-\d{2}-\d{2})\s*\|\s*(\d+(?:\.\d+)?)'
         date_matches = re.findall(date_pattern, markdown_text)
         
@@ -510,7 +537,7 @@ def extract_table_from_markdown(markdown_text: str) -> str:
             for date, value in date_matches:
                 try:
                     date_data.append({
-                        "date": date, 
+                        "date": date,
                         "value": float(value)
                     })
                 except ValueError:
@@ -520,7 +547,7 @@ def extract_table_from_markdown(markdown_text: str) -> str:
                 logging.info(f"Extracted {len(date_data)} date-value pairs")
                 return json.dumps(date_data)
         
-        # Last resort - extract any numbers as fallback
+        # Last resort - extract any numbers
         number_pattern = r'(\d+(?:\.\d+)?)'
         numbers = re.findall(number_pattern, markdown_text)
         
@@ -540,6 +567,7 @@ def extract_table_from_markdown(markdown_text: str) -> str:
                 return json.dumps(data)
         
         # Ultimate fallback
+        logging.warning("No data patterns found, returning fallback data")
         return json.dumps([{"category": "Sample", "value": 100}, {"category": "Data", "value": 50}])
         
     except Exception as e:
@@ -868,83 +896,123 @@ def connect_genie_to_visualization(genie_output):
     content = ""
     sql_query = ""
     data_table = ""
+    structured_data = None
     
-    # First check if there is a JSON string in the content or messages
+    logging.info("Starting connect_genie_to_visualization")
+    
+    # First extract content from the genie_output
     if isinstance(genie_output, dict):
         if 'content' in genie_output:
             content = genie_output['content']
-        elif 'messages' in genie_output:
-            # Find Genie messages
-            for msg in reversed(genie_output['messages']):
-                if msg.get('role') == 'assistant' and 'content' in msg:
-                    if msg.get('name') == 'Genie':
-                        content = msg['content']
-                        break
-                    elif not content:  # Fallback to any assistant message
-                        content = msg['content']
-    
-    # Try to parse JSON from content
-    json_data = None
-    try:
-        # Check if content is a JSON string
-        if content.strip().startswith('{') and content.strip().endswith('}'):
-            json_data = json.loads(content)
-            logging.info("Successfully parsed JSON from content")
-    except json.JSONDecodeError:
-        # Try to find a JSON object in the content
-        json_pattern = r'({[\s\S]*?})'
-        json_match = re.search(json_pattern, content)
-        if json_match:
-            try:
-                json_data = json.loads(json_match.group(1))
-                logging.info("Successfully parsed JSON from content using regex")
-            except json.JSONDecodeError:
-                logging.info("Failed to parse JSON from content using regex")
-    
-    # Extract data from JSON if available
-    if json_data:
-        if 'sql_query' in json_data:
-            sql_query = json_data['sql_query']
-            logging.info(f"Extracted SQL query: {sql_query[:50]}...")
+            logging.info(f"Found content in genie_output, length: {len(content)}")
         
-        if 'data_table' in json_data:
-            data_table = json_data['data_table']
-            logging.info(f"Extracted data table: {data_table[:100]}...")
+        # Look for tool messages that might contain the JSON response
+        if 'messages' in genie_output:
+            for msg in genie_output['messages']:
+                if msg.get('role') == 'tool' and 'content' in msg:
+                    try:
+                        tool_content = json.loads(msg['content'])
+                        if 'sql_query' in tool_content:
+                            sql_query = tool_content['sql_query']
+                            logging.info(f"Found SQL query in tool message: {sql_query[:50]}...")
+                        
+                        if 'data_table' in tool_content:
+                            data_table = tool_content['data_table']
+                            logging.info(f"Found data_table in tool message, length: {len(data_table)}")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                        
+            # If we didn't find in tool messages, look for Genie's content
+            if not data_table and not sql_query:
+                for msg in reversed(genie_output['messages']):
+                    if msg.get('role') == 'assistant' and 'content' in msg:
+                        if msg.get('name') == 'Genie':
+                            content = msg['content']
+                            logging.info(f"Found Genie content in messages, length: {len(content)}")
+                            break
+                        elif not content:
+                            content = msg['content']
     
-    # Process the data table to extract structured data
-    table_data = None
+    # Try to extract JSON data from content
+    if not data_table or not sql_query:
+        # Try to parse JSON from content
+        try:
+            # Look for a complete JSON object in the content
+            json_match = re.search(r'({[\s\S]*?})', content)
+            if json_match:
+                potential_json = json_match.group(1)
+                try:
+                    json_data = json.loads(potential_json)
+                    logging.info(f"Successfully parsed JSON from content: {json_data.keys()}")
+                    
+                    if 'sql_query' in json_data and not sql_query:
+                        sql_query = json_data['sql_query']
+                        logging.info(f"Extracted SQL query from JSON: {sql_query[:50]}...")
+                        
+                    if 'data_table' in json_data and not data_table:
+                        data_table = json_data['data_table']
+                        logging.info(f"Extracted data_table from JSON, length: {len(data_table)}")
+                except json.JSONDecodeError:
+                    # Not valid JSON, try other patterns
+                    pass
+        except Exception as e:
+            logging.error(f"Error extracting JSON from content: {str(e)}")
+    
+    # Process data_table if found
     if data_table:
-        # Process the data_table string (handle escaped characters)
-        cleaned_table = data_table.replace('\\n', '\n').replace('\\t', '\t')
-        
-        # Parse the markdown table
-        rows = cleaned_table.strip().split('\n')
-        if len(rows) >= 2:  # Need at least header and one data row
-            # Extract headers from the first row or second row if first is just column numbers
-            header_row_idx = 0
-            if rows[0].strip().startswith('|') and all(c.isdigit() or c in ' |:-' for c in rows[0]):
-                header_row_idx = 1
+        logging.info("Processing data_table")
+        try:
+            # Clean up the data table (handle escaping)
+            cleaned_table = data_table.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
             
-            if header_row_idx < len(rows):
+            # Split into rows and extract data
+            rows = cleaned_table.strip().split('\n')
+            if len(rows) >= 2:  # Need at least header and data
+                # Identify header row (sometimes there's an index column)
+                header_row_idx = 0
+                for i, row in enumerate(rows):
+                    if 'usage_date' in row.lower() or 'date' in row.lower():
+                        header_row_idx = i
+                        break
+                
+                # Extract headers
                 header_row = rows[header_row_idx]
-                headers = [h.strip() for h in header_row.split('|') if h.strip()]
+                headers = []
+                for part in header_row.split('|'):
+                    part = part.strip()
+                    if part and not part.isdigit():  # Skip index columns
+                        headers.append(part)
+                
+                # Skip the separator row if present (contains "----")
+                data_start_idx = header_row_idx + 1
+                if data_start_idx < len(rows) and "----" in rows[data_start_idx]:
+                    data_start_idx += 1
                 
                 # Process data rows
                 data_rows = []
-                for row in rows[header_row_idx+1:]:
-                    if '|' not in row or '-|-' in row:  # Skip separator rows
+                for i in range(data_start_idx, len(rows)):
+                    row = rows[i]
+                    if '|' not in row:
                         continue
                     
-                    values = [v.strip() for v in row.split('|') if v.strip()]
-                    if len(values) >= 2:  # Need at least two values
+                    # Extract values, handling index column if present
+                    parts = [p.strip() for p in row.split('|')]
+                    values = [p for p in parts if p and not (p.isdigit() and parts.index(p) == 1)]  # Skip index
+                    
+                    if len(values) >= 2:  # Need at least date and value
                         row_data = {}
-                        for i, val in enumerate(values):
-                            key = headers[i] if i < len(headers) else f"column_{i}"
+                        for j, val in enumerate(values):
+                            if j < len(headers):
+                                key = headers[j]
+                            else:
+                                key = f"column_{j}"
                             
-                            # Try to convert to numeric
+                            # Convert to appropriate type
                             try:
-                                if val.replace('.', '', 1).isdigit():
-                                    if '.' in val:
+                                if val.replace('.', '', 1).replace('-', '', 1).isdigit():
+                                    if '-' in val and len(val) == 10:  # Likely a date
+                                        row_data[key] = val
+                                    elif '.' in val:
                                         row_data[key] = float(val)
                                     else:
                                         row_data[key] = int(val)
@@ -952,21 +1020,25 @@ def connect_genie_to_visualization(genie_output):
                                     row_data[key] = val
                             except (ValueError, TypeError):
                                 row_data[key] = val
-                                
-                        data_rows.append(row_data)
+                        
+                        if row_data:
+                            data_rows.append(row_data)
                 
                 if data_rows:
-                    table_data = json.dumps(data_rows)
                     logging.info(f"Successfully extracted {len(data_rows)} rows from data_table")
+                    structured_data = json.dumps(data_rows)
+        except Exception as e:
+            logging.error(f"Error processing data_table: {str(e)}")
     
-    # If no data table was found in JSON, try to extract from content directly
-    if not table_data:
-        table_data = extract_table_from_markdown(content)
+    # If we still haven't found structured data, try extracting from content
+    if not structured_data:
+        logging.info("Falling back to extract_table_from_markdown")
+        structured_data = extract_table_from_markdown(content)
     
-    # Create instruction for visualization agent
-    if table_data and table_data != "[]" and table_data != "null":
+    # Create instruction for visualization
+    if structured_data and structured_data != "[]" and structured_data != "null":
         instruction = f"""
-        Please create a visualization based on this data: {table_data}
+        Please create a visualization based on this data: {structured_data}
         
         {f"SQL Query: {sql_query}" if sql_query else ""}
         
@@ -976,11 +1048,12 @@ def connect_genie_to_visualization(genie_output):
         Make your best effort to create a clear and informative visualization.
         """
     else:
-        # Fallback to simple data
+        # Ultimate fallback
         fallback_data = json.dumps([
             {"category": "Sample", "value": 100},
             {"category": "Data", "value": 50}
         ])
+        logging.warning("No structured data found, using fallback data")
         instruction = f"""
         I couldn't extract structured data from the previous response.
         Please create a simple visualization with this sample data: {fallback_data}

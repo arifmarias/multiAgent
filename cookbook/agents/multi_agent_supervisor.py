@@ -316,78 +316,44 @@ class MultiAgentSupervisor(mlflow.pyfunc.PythonModel):
         # Special handling for visualization agent when previous agent was Genie
         modified_input_messages = input_messages.copy()
         if agent_name == "Visualization" and self.state.last_agent_called == "Genie":
-            # Find Genie's response
-            genie_response = None
+            # Get the complete genie response
+            genie_response = {
+                "messages": input_messages.copy()
+            }
+            
+            # Find Genie's specific content in the messages
             for msg in reversed(input_messages):
                 if msg.get("role") == "assistant" and msg.get("name") == "Genie" and "content" in msg:
-                    genie_response = msg["content"]
+                    genie_response["content"] = msg["content"]
                     break
                     
-            if genie_response:
-                try:
-                    # Extract table data or create fallback data
-                    import re
-                    import json
-                    
-                    # First try to extract a markdown table
-                    table_pattern = r'\|(.+)\|\n\|(?:-+\|)+\n(?:\|.+\|\n)+'
-                    table_match = re.search(table_pattern, genie_response, re.DOTALL)
-                    
-                    if table_match:
-                        # Extract the table data
-                        table_data = table_match.group(0)
-                        
-                        # Create a message with the extracted table
-                        visualization_instruction = f"""
-                        Please create a visualization based on this table:
-                        
-                        {table_data}
-                        
-                        Create the most appropriate type of visualization for this data.
-                        """
-                    else:
-                        # Try to extract numbers from the text
-                        number_pattern = r'(\d+(?:\.\d+)?)'
-                        numbers = re.findall(number_pattern, genie_response)
-                        
-                        if numbers and len(numbers) >= 2:
-                            # Create fallback data
-                            fallback_data = []
-                            for i, num in enumerate(numbers[:5]):  # Use up to 5 numbers
-                                try:
-                                    fallback_data.append({
-                                        "category": f"Value {i+1}",
-                                        "value": float(num)
-                                    })
-                                except ValueError:
-                                    pass
-                            
-                            logging.info(f"Created fallback data from numerical values in content")
-                            
-                            # Create a message with the fallback data
-                            visualization_instruction = f"""
-                            Please create a visualization based on this data: {json.dumps(fallback_data)}
-                            
-                            If the data appears to contain dates or time periods, create a line chart.
-                            If the data is categorical, create a bar chart.
-                            """
-                        else:
-                            # No numerical data found, use minimal example data
-                            visualization_instruction = """
-                            Please create a simple bar chart visualization with this sample data:
-                            [{"category": "Sample", "value": 100}, {"category": "Data", "value": 50}]
-                            """
-                    
-                    # Add the instruction as a new user message
-                    modified_input_messages = input_messages + [{
-                        "role": "user",
-                        "content": visualization_instruction.strip()
-                    }]
-                    
-                    logging.info(f"Created custom visualization instruction")
-                    
-                except Exception as e:
-                    logging.error(f"Error processing Genie data: {str(e)}. Using original messages.")
+            # Also check for tool messages which might contain the JSON data
+            for msg in input_messages:
+                if msg.get("role") == "tool" and "content" in msg:
+                    try:
+                        tool_content = json.loads(msg["content"])
+                        if "sql_query" in tool_content or "data_table" in tool_content:
+                            # We found the structured data from Genie
+                            logging.info("Found structured data in tool message")
+                            break
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            
+            # Import the visualization tools and call connect_genie_to_visualization
+            try:
+                from tools.visualization_tools import connect_genie_to_visualization
+                
+                logging.info("Calling connect_genie_to_visualization")
+                processed_input = connect_genie_to_visualization(genie_response)
+                
+                # Check if we got a valid result
+                if processed_input and "messages" in processed_input:
+                    modified_input_messages = processed_input["messages"]
+                    logging.info("Successfully processed Genie data for Visualization")
+                else:
+                    logging.warning("connect_genie_to_visualization returned invalid result")
+            except Exception as e:
+                logging.error(f"Error processing Genie data: {str(e)}", exc_info=True)
         
         raw_agent_output = {}
         try:
